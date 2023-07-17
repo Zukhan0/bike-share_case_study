@@ -1,0 +1,119 @@
+---
+title: "bike-share_analysis_v1"
+author: "Zuhair"
+date: "2023-04-02"
+output: html_document
+---
+## Business task
+I have been assigned to determine how annual members and nonmember riders use the company's bikes differently and why nonmember riders might purchase the membership.
+
+Data is provided from https://www.kaggle.com/datasets/jorge4141/case-study-cyclistic-bikeshare-analysis. 
+
+## Libraries and setup
+```{r setup, message=FALSE}
+library(tidyverse)
+data_path <- list.files(path = "./bike_share_data", pattern = "*.csv", full.names = TRUE)
+```
+
+## Finding the sample size
+Because we have a large amount of data to process, we can run analysis on a sample instead. The first step will be to create a function that adds all records from the csv files and gives us the total.
+
+We should also take a look at what our columns are.
+```{r total record function}
+total_adder <- function(list_of_csvs) {
+  total_records = 0
+  
+  for (csv in list_of_csvs) {
+    df <- read_csv(csv, show_col_types = FALSE)
+    total_records <- total_records + nrow(df)
+  }
+  print(paste("total records:", total_records))
+  colnames(df)
+}
+total_adder(data_path)
+```
+5,755,694 is a lot of records! With this, a 99% confidence level, and a margin of error of 5%, our total sample size should be at least 664. Calculated using [goodcalculators.com](https://goodcalculators.com/sample-size-calculator/). Since we want the sample to be representative of the last 12 months, we will divide this number by 12 which is 56 (rounded up) and get the 56 samples from each csv (which is data per month). 
+
+## Selecting random samples and merging data
+We need to make a function that goes through every csv file and selects 56 random samples. Then we need to put all of these samples into one dataframe. 
+
+We can clean the data by dropping NAs in the columns relevant to our analysis.
+
+We assign the dataframe complete with samples of all 12 months to df_sampled and print the structure of the dataframe to get a quick look.
+```{r sample data and merge df function, warning=FALSE}
+#To reproduce results
+set.seed(12345)
+
+random_sampler <- function(list_of_csvs, samples_per_csv = 56) {
+initial_setup_complete <- FALSE
+dropped_nas <- 0
+dropped_rows <- 0
+
+  for (csv in list_of_csvs) {
+    df <- read_csv(csv, show_col_types = FALSE)
+    df_row_initial <- nrow(df)
+    
+    #Clean data to get rid of NAs
+    relevant_columns <- c("ride_id", "rideable_type", "started_at", "ended_at", "start_station_name", "end_station_name", "member_casual")
+    dropped_nas <- dropped_nas + sum(is.na(df[, relevant_columns]))
+    df <- df %>% drop_na(relevant_columns)
+    dropped_rows <- dropped_rows + (df_row_initial - nrow(df))
+    
+    #Select random rows and index them
+    random_rows <- sample(1:nrow(df), size = samples_per_csv, replace = FALSE, prob = NULL)
+    df_sample <- df[random_rows,]
+
+    #Merge all samples into one dataframe
+    if (initial_setup_complete == FALSE) {
+      df <- df[0,]
+      df_sampled <- rbind(df, df_sample)
+    }
+    else if (initial_setup_complete == TRUE) {
+      df_sampled = rbind(df_sampled, df_sample)
+    }
+
+    initial_setup_complete = TRUE
+  }
+  print(paste("dropped NAs:", dropped_nas, "dropped rows:", dropped_rows))
+  return(df_sampled)
+}
+df_sampled <- random_sampler(data_path, 56)
+str(df_sampled)
+```
+Looking good so far. Our tibble shows us two important things. Firstly, some renaming could make the data more readable. Secondly, the started_at and ended_at fields are in the date-time format (POSIXct). We can use their records to create a new field (the difference) which will give us the ride time in minutes. 
+
+## Renaming and creating columns
+Ride time may be a valuable variable to include in the dataframe in order to see any relationship with other variables (such as member_casual) in our plots.  
+```{r renaming and creating a new field}
+df_sampled <- rename(df_sampled, bike_type = rideable_type)
+df_sampled <- rename(df_sampled, membership_status = member_casual)
+df_sampled$membership_status[df_sampled$membership_status == 'casual'] <- 'nonmember'
+colnames(df_sampled)
+
+df_sampled$ride_time <-round(difftime(df_sampled$ended_at, df_sampled$started_at, units = 'mins'))
+df_sampled$ride_time <- type.convert(df_sampled$ride_time, as.is= TRUE)
+head(df_sampled$ride_time, 30)
+```
+We can now start plotting to get an idea of what the data looks like.
+
+## Data insights with relevant variables
+We are most concerned with bike_type (which is popular & its ride_time), membership_status preferences for bikes (and their ride_time).
+```{r bar plot, warning=FALSE}
+
+ggplot(df_sampled, aes(x = bike_type, fill = membership_status)) +
+  geom_bar(position = 'dodge') +
+  labs(title = 'Number of trips per bike type & membership', x = 'bike type', y = 'number of trips')
+```
+
+We can see that the classic bike is the overall most popular option. However, nonmember riders are nearly tied for preferring the classic and electric bikes. Interestingly the docked bike is unpopular, with no member riders. 
+```{r box plot, warning= FALSE}
+ggplot(df_sampled, aes(x = bike_type, y = ride_time, fill = membership_status)) +
+  geom_boxplot() + 
+  scale_y_continuous(limits = c(0, 60)) +
+  labs(title = 'Plot of ride time per bike type & membership', x= 'bike type', y= 'ride time mins')
+```
+
+Here we see that median ride time is higher for nonmember riders than members. The docked bike has a higher average ride time than any other bike and may be why nonmember riders prefer it as they typically ride less often but for longer.
+
+## Conclusion
+The trend for nonmember riders is to ride less often but for longer than member riders. The current pricing scheme favors this preference. If it were changed to accommodate for fewer rides (per monthly for example) some nonmember riders may subscribe to member status. 
